@@ -1,0 +1,3 @@
+# Tapestri Insights (version 2.2) was used to filter and process Mission Bio loom files for each sample
+
+# Click link in README.md to download software or use this path: https://dl.missionbio.io/insights/Tapestri%20Insights%202.2.dmg
