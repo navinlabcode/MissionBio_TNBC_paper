@@ -1,0 +1,6 @@
+﻿ID,Age,ER,PR,HER2,Grade,Pathology,Lymph,Treatment,Ploidy
+TN1,50,<1%,<1%,neg,3,IDC,neg,untreated,3.1
+TN2,56,<1%,<1%,neg,3,IDC/DCIS,neg,AG,3.7
+TN3,53,<1%,<1%,neg,3,IDC/DCIS,neg,untreated,3.6
+TN4,71,<1%,<1%,neg,3,IDC/DCIS,neg,untreated,3.4
+TN5,37,<1%,<1%,neg,3,IDC/DCIS,neg,untreated,2.8
