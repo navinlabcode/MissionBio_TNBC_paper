@@ -1,0 +1,365 @@
+---
+title: "Tapestri CNV User Guide"
+author: "Mission Bio"
+date: "9/20/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using the Mission Bio Tapestri Platform, reagents and the *tapestri.cnv* R package, we explore Single Nucleotide Variants (SNVs) and Copy Number Variations (CNVs), including loss of heterozygosity (LOH), which plays a large role in cancer evolution and contributes to cancer heterogeneity.More details can be found in the [Application Note] (https://missionbio.com/cnv_application_note/). 
+
+The *tapestri.cnv* R package is an exploratory data analysis tool to discover gene-level and/or chromosome-level amplifications and deletions, including LOH. Refer to the README.md file for instructions on how to install the *tapestri.cnv* R package. 
+
+## Prepare Input Files
+
+We will analyze single cell DNA-sequencing data from the Tapestri Platform to demonstrate the ability to detect both CNVs and SNVs simultaneously. 
+
+We start by preparing our input files. The first dataset to be analyzed includes a clinical sample that was processed with a Custom Single-Cell Renal Cell Carcinoma (RCC) panel.  The data was processed using the Tapestri Platform and the following output files are required: 
+
+ * Amplicon bed file (amplicons.bed; located in the _Designer_ subfolder of the panel zip file that is used for Tapestri Pipeline)
+ * Barcode distribution file(s) (e.g., tube_0.rg0.barcode.cell.distribution.tsv; downloadable from the analysis results page in your Bluebee account)
+ * VCF header file (vcf_header.txt; downloadable from the analysis results page in your Bluebee account)
+ * LOOM file (e.g., cells.loom; downloadable from the analysis results page in your Bluebee account)
+
+In the code below, all our input files are located in a **data** subfolder in the working directory. Ensure your files are also in a **data** subfolder in your working directory or adjust your paths accordingly.  Next steps include reading the barcode distribution files together with the VCF header file, amplicon bed file and LOOM file. 
+
+```{r readdata, message=FALSE, warning=FALSE}
+# Load libraries
+library(hdf5r)
+library(tapestri.cnv)
+
+# Read data
+amplicons <- parse_bed("*.bed")
+barcodes <- read_barcodes("*.barcode.cell.distribution.merged.tsv", "*.vcf_header.txt")
+loom <- connect_to_loom("*.cells.loom")
+```
+
+After loading the data, we proceed in the cell normalization step where reads of each cell are normalized by cells' total number of counts.
+
+```{r cell normalization, message=FALSE, warning=FALSE}
+normalized_barcodes <- normalize_barcodes(barcodes, advanced=TRUE)
+```
+
+If *advanced=TRUE* in the above function, then we apply a further normalization step for the amplicons by:
+Amplicon median is calculated across the matrix and a normalization factor is calculated per amplicon by dividing the total reads per amplicon to the median
+amplicons below 0.2X of median is removed
+Each cell in the matrix is divided by its amplicon normalization factor. 
+For eg. if an amplicon has 5x total reads compared the median then each cell in that amplicon is divided by 5. Also if an amplicon has 0.5X of the median reads then each cell in that amplicon is divided by 0.5 or essentially multiplied by 2. 
+
+## Data Exploration - Filtering of Genotypes
+
+Using single-cell genotype data, we assess whether or not cells can be grouped into putative â€˜normalâ€™ cells (diploid reference cell population) and determine the number of subpopulations in our data. 
+
+Before clustering we load and filter the data. 
+
+In this example, we will read the genotype matrix from the LOOM file and not apply any filters. We review the first 5 columns of the genotype data.
+
+```{r genotype nofilter, warning=FALSE, message=FALSE}
+genotypes <- extract_genotypes(loom, barcodes, gt.filter=FALSE)
+
+# Display the number of variants with no filtering. 
+head(genotypes[,1:5])
+ncol(genotypes)
+```
+
+Typically we want to reduce the number of variants to high-quality variants. This can be accomplished by setting the argument in the above command *gt.filter=TRUE*.
+Default filters are applied as recommended in Tapestri Insights. Explanation of the filters is provided below and (here)[https://missionbio.com/docs/#document-6]: 
+
+ * gt.gqc: Cell-specific genotype quality
+ * gt.dpc: Cell-specific read depth 
+ * gt.afc: Cell-specific alternate allele frequency 
+ * gt.mv:  Variants genotyped in < X percent of cells
+ * gt.mc:  Cells with genotypes in < X percent of variants
+ * gt.mm:  Variants mutated in < X percent of cells
+
+In addition to TI filters, we also have the option to mask as missing any low quality GT with *gt.mask* setting. 
+
+ 
+  After applying the default filters the total number of variants is typically reduced. 
+
+```{r genotype TIfilter, warning=FALSE, message=FALSE}
+genotypes.ti.f <- extract_genotypes(loom, barcodes, gt.filter=TRUE, gt.gqc = 30, gt.dpc = 10, gt.afc = 20,  gt.mv = 50, gt.mc = 50, gt.mm = 1, gt.mask = FALSE)
+
+# Display the number of variants with default TI filtering applied. 
+head(genotypes.ti.f[,1:5])
+ncol(genotypes.ti.f)
+```
+
+Filter settings may be customized by changing the values in the corresponding arguments. In this example, we increase the cutoff of genotype quality from 30 to 40 and read depth from 10 to 30.
+
+```{r genotype TIfilterv1, warning=FALSE, message=FALSE}
+genotypes.ti.f_v1 <- extract_genotypes(loom, barcodes, gt.filter=TRUE, gt.gqc = 40, gt.dpc = 30, gt.afc = 20,  gt.mv = 50, gt.mc = 50, gt.mm = 1, gt.mask = FALSE)
+
+# Display the number of variants with custom TI filtering applied.
+ncol(genotypes.ti.f_v1)
+```
+
+In addition to quality-related filters the data may also be filtered using zygosity as a metric:
+ * remove variants that are genotyped either homozygous reference or heterozygous reference or homozygous alternate in > 90% of the cells (removal of non-informative variants)
+ * remove heterozygous variants that are genotyped in < 5% of the cells 
+
+This is exploratory and these parameters can be changed to test different values. Explanation of the filters is provided below:
+
+ * z.variants: remove GT calls in > X% of cells
+ * z.missing: remove missing/no-calls in >X% of cells
+ * z.het.min: remove het GT calls in <X% of cells
+
+```{r zygosity, warning=FALSE}
+# Filter by zygosity
+genotypes.f <- filter_by_zygosity(genotypes.ti.f, z.variants=90, z.missing=100, z.het.min=5)
+
+# Display the number of variants with default TI filtering and zygosity filtering applied.
+ncol(genotypes.f)
+```
+
+Next, for each cell we extract the annotations of the variants in the genotype matrix. We then save the annotations of our filtered variants in our local directory as a _.tsv_ file.
+The number of rows of the table corresponds to the product of [number of cells] x [number of filtered variants]. 
+
+The table includes the following information:
+ * variant:	variant with chromosome, coordinate, and genotype information
+ * cells:		cell barcode
+ * zygosity:	0 = homozygous reference, 1 = heterozygous, 2 = homozygous mutant
+ * chrom:		chromosome number
+ * pos:		genomic coordinate based on human reference genome build hg19
+ * ref:		reference allele
+ * alt:		alternate allele
+ * qual:		variant quality value
+ * amplicon:	amplicon name
+ * reflen:		reference length
+ * altlen:		alternate length
+ * varType:	variant type
+ * af:		alternate single-cell allele frequency
+
+```{r annotations, message=FALSE, warning=FALSE}
+# Annotate genotypes
+genotypes.annot <- annotate_genotypes(loom, barcodes, genotypes.f)
+
+head(genotypes.annot)
+
+write.table(genotypes.annot, "genotypes.annot.tsv", sep="\t", quote=FALSE)
+```
+
+## Data exploration - Determining the Number of Clusters
+
+In this step, we determine the optimal number of clusters for our dataset using k-means or hierarchical clustering. This is done by optimizing the average silhouette of observations for different values of k.
+
+We use the filtered genotype date to cluster the data.
+
+```{r explore, warning=FALSE, message=FALSE}
+
+max_cluster <- cluster_barcodes(genotypes.f, "kmeans", "optimal_cluster_kmeans.pdf")
+max_cluster <- cluster_barcodes(genotypes.f, "hcut", "optimal_cluster_hclust.pdf")
+```
+
+Thus we calculate the optimal number of clusters as 2 in the present example case. Two PDF files with suggestions of what optimal cluster number to choose from the 2 different methods are created in our working directory. 
+
+Let us visually explore the data and evaluate the impact when we choose different clustering methods with different number of clusters. How do the cell populations cluster using SNVs? We can explore using dimensionality reduction techniques such as PCA and t-SNE and visually plot as heatmap.
+
+We first need to reduce the dimensionality of the data using PCA followed by t-SNE. This is critical if no filters are applied. However, in this example we are using a dataset that has been filtered with default TI filters (genotypes.f).
+
+```{r tsnepca, message=FALSE,  warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(magrittr)
+library(ggrepel)
+library(Rtsne)
+
+# compute PCA
+pca.gt = prcomp(genotypes.f)
+
+# use correlations from PCA to calculate pairwise similarities (t-SNE)
+tsne.gt = Rtsne(pca.gt$x, pca = FALSE, check_duplicates = FALSE)
+tsne1 = tsne.gt$Y[, 1]
+tsne2 = tsne.gt$Y[, 2]
+
+## plot to see how it looks in 2-dimensional space pairwise similarities calculated from t-sne
+plot_noclust <- ggplot(data.frame(tsne.gt$Y), aes(x = tsne1, y = tsne2)) +
+    geom_point(alpha = 0.1) + theme_bw()
+
+plot_noclust
+```
+
+If we choose ***hierarchical clustering ** as a method, then run: 
+```{r hierarchical clustering SNV, warning=FALSE, message=FALSE}
+# hierarchical clustering - compute distances and create a tree
+## method can be complete, ward.D, etc.
+hc.norm = hclust(dist(genotypes.f), method = "ward.D2")
+plot(hc.norm)
+gt.norm <- tsne.gt
+
+## cut the tree into two clusters (k can change)
+gt.norm$hclust = factor(cutree(hc.norm, k=3))
+
+## define a column with clusters as factor
+info.gt = tibble(hclust = factor(gt.norm$hclust))
+
+# get a table with cluster annotations to 1st and 2nd dimensions from t-sne output 
+info.gt <- info.gt %>% mutate(tsne1 = tsne.gt$Y[, 1], tsne2 = tsne.gt$Y[, 2])
+
+# calculate the mean of the two dimensions for each group
+hc.norm.cent = info.gt %>% group_by(hclust) %>% dplyr::select(tsne1,
+    tsne2) %>% summarize_all(mean)
+
+# visualize 
+plot_hc <- ggplot(info.gt, aes(x = tsne1, y = tsne2, colour = hclust)) +
+    geom_point(alpha = 0.3) + theme_bw() + geom_label_repel(aes(label = hclust),
+    data = hc.norm.cent) + guides(colour = FALSE) +
+    ggtitle("Hierarchical Clustering - Linkage criterion: Average")
+
+plot_hc
+```
+
+If we choose **method=k-means ** as a method, then run: 
+```{r kmeans, warning=FALSE, message=FALSE}
+## perform k-means clustering and choose the number of clusters - here is 2  
+set.seed(123456)
+km.gt = kmeans(tsne.gt$Y, centers=3, nstart = 200, iter.max = 100)
+
+# create a new column with the groups derived from kmeans clustering
+info.gt$kmeans = factor(km.gt$cluster)
+
+# calculate the mean for each dimension
+km.cent = info.gt %>% group_by(kmeans) %>% dplyr::select(tsne1,
+    tsne2) %>% summarize_all(mean)
+
+# visualize
+plot_k <- ggplot(info.gt, aes(x = tsne1, y = tsne2, colour = kmeans)) +
+    geom_point(alpha = 0.3) + theme_bw() + geom_label_repel(aes(label = kmeans),
+    data = km.cent) + guides(colour = FALSE) + ggtitle("k-means")
+
+plot_k
+```
+
+Next we plot the SNVs for each filtered variant across all cells in heatmap format. Using **max_cluster** we can use the number of clusters that was determined using hierarchical clustering or kmeans, in this case 2, or define our own number of clusters.
+
+The heatmap can also help us visualize the number of clusters that are present in our dataset, and we may want to go back and modify the number of clusters based on the results of the heatmap. Essentially, we use the information from the h-clust or k-means calculations, t-SNEs and heatmaps based on filtered SNV data to determine the number of clusters in our dataset.  
+
+ * max_cluster: optimal number of clusters	
+ * outfile: output file		
+ * median.filter:		
+ * median.bin:		
+ * annotations: genotype annotations
+
+```{r heatmap, warning=FALSE, message=FALSE, out.width='100%'}
+
+# create heatmap and save as a pdf
+snv_heatmap(genotypes.f, max_cluster=3, outfile="genotypes_heatmap.pdf", median.filter=TRUE, median.bin=11, annotations=genotypes.annot)
+
+```
+
+From the heatmap, we can explore the distribution pattern of genotypes across all cells and clusters. Zygosity changes across the two clusters in different chromosomes let us identify regions with LOH. Here we define LOH in the chromosomal regions as zygosity change from heterozygous to homozygous reference or homozygous mutant from group 1 to group 2. In our case, 3 regions across 3 different chromosomes are associated with LOH at chr3, chr9 and chr14.
+
+To identify which cell belongs to which cluster we can run **snv_clustering** function and output as a _.tsv_ file.
+
+```{r snvclustering, warning=FALSE, message=FALSE}
+
+snv_clust <- snv_clustering(genotypes.f, max_cluster=3)
+
+# Display the number of cells in each cluster.
+table(snv_clust$cluster)
+
+write.table(snv_clust, "snv.clust.tsv", sep="\t", quote=FALSE)
+
+```
+
+## Ploidy Calculation and Ploidy Visualization with Heatmaps
+
+Having define LOH regions in our dataset and exploring the data through the clustering methods, is there any way that we can define one of the two groups as control group? One option could be to define as control group, the cell populations that have the maximum number of heterozygous calls. In this case, in our dataset *cluster_1* could be the normal population and we use it to calculate our ploidy values by dividing amplicon counts from all cells by the median of the corresponding amplicons from the control group.
+
+*cluster_1* has the lowest number of barcode cells and by inspecting the number of cells above we can see that this corresponds to the 2nd group in our *snv_clust* output, thus **norm.cluster=2**
+
+```{r ploidy heatmap amplicons, warning=FALSE, message=FALSE}
+
+#number of clusters can be defined as 'max_cluster' or by a number, i.e. 2, 3, 4
+ploidy2 <- compute_ploidy(normalized_barcodes, "hcut", max_cluster, snv_clust, norm.cluster=3)
+
+ploidy_heatmap(ploidy, amplicons, outfile='ploidy.amplicons.pdf')
+
+write.table(ploidy, "ploidy.tsv", sep="\t", quote=FALSE)
+
+source("tapestri.cnv/ploidy_to_genes.R")
+ploidy_to_genes2 <- ploidy_annotate_amplicons_to_genes(ploidy2, amplicons, min.amplicons = 1)
+
+write.csv(ploidy_to_genes, "tn25_ploidy_rev.csv")
+
+```
+
+Again, from the heatmap we can clearly see the three regions where there is loss of heterozygosity and ploidy from 2 is reduced closer to 1.
+
+If we want to plot ploidy information by genes and only those that have more than 3 amplicons then we run. 
+
+```{r ploidy heatmap genes, warning=FALSE, message=FALSE}
+
+ploidy_heatmap(ploidy, amplicons, groupby.genes=TRUE, min.amplicons=2, outfile='ploidy.genes.3.pdf')
+
+```
+
+## Ploidy Visualisation with Line Plots
+
+Using the ploidy values we can also look at the copy number calls for each cell population with a line graph and again discover if there is any gain or loss.  
+
+```{r lineplot, warning=FALSE, message=FALSE}
+
+ploidy_lineplot(ploidy, amplicons, 'lineplot_cl1.pdf', snv_clust, 1, min.amplicons = 1)
+
+ploidy_lineplot(ploidy, amplicons, 'lineplot_cl2.pdf', snv_clust, 2, min.amplicons = 1)
+
+
+```
+
+## Ploidy Visualisation with t-SNE
+
+Finally, we can visulize our cells with a t-SNE based on the calculated ploidy values. 
+
+```{r tsneploidy, message=FALSE,  warning=FALSE}
+
+# compute PCA
+
+pca.pl = prcomp(ploidy)
+# use correlations from PCA to calculate pairwise similarities (t-SNE)
+tsne.pl = Rtsne(pca.pl$x, pca = FALSE, check_duplicates = FALSE)
+tsne1 = tsne.pl$Y[, 1]
+tsne2 = tsne.pl$Y[, 2]
+
+## plot to see how it looks in 2-dimensional space pairwise similarities calculated from t-sne
+plot_noclust <- ggplot(data.frame(tsne.pl$Y), aes(x = tsne1, y = tsne2)) +
+    geom_point(alpha = 0.1) + theme_bw()
+
+plot_noclust
+
+```
+
+```{r hierarchical clustering CNV, warning=FALSE, message=FALSE}
+# hierarchical clustering - compute distances and create a tree
+## method can be complete, ward.D, etc.
+hc.norm = hclust(dist(tsne.pl$Y), method = "average") 
+pl.norm <- tsne.pl
+
+## cut the tree into two clusters (k can change)
+pl.norm$hclust = factor(cutree(hc.norm, k=2))
+
+## define a column with clusters as factor
+info.pl = tibble(hclust = factor(pl.norm$hclust))
+
+# get a table with cluster annotations to 1st and 2nd dimensions from t-sne output 
+info.pl <- info.pl %>% mutate(tsne1 = tsne.pl$Y[, 1], tsne2 = tsne.pl$Y[, 2])
+
+# calculate the mean of the two dimensions for each group
+hc.norm.cent = info.pl %>% group_by(hclust) %>% dplyr::select(tsne1,
+    tsne2) %>% summarize_all(mean)
+
+# visualise 
+plot_hc <- ggplot(info.pl, aes(x = tsne1, y = tsne2, colour = hclust)) +
+    geom_point(alpha = 0.3) + theme_bw() + geom_label_repel(aes(label = hclust),
+    data = hc.norm.cent) + guides(colour = FALSE) +
+    ggtitle("Hierarchical Clustering - Linkage criterion: Average")
+
+plot_hc
+```
