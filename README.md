@@ -8,7 +8,7 @@ includes clinical patient information, total genes submitted for multi-patient t
 R scripts in this directory include all the code required to reproduce the figures in the Mission Bio TNBC paper.
 
 #### Software
-includes [*Tapestri Insights*](https://dl.missionbio.io/insights/Tapestri%20Insights%202.2.dmg)(*v2.2*) software and Tapestri.cnv R Package.
+includes [*Tapestri Insights*](https://dl.missionbio.io/insights/Tapestri%20Insights%202.2.dmg)(*v2.2*) software, custom panel file, and Tapestri.cnv R Package.
 
 ### _Dependencies_
 ------------
